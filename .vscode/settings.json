@@ -1,0 +1,8 @@
+// .vscode/settings.json
+{
+    "terminal.integrated.shellArgs.windows": [
+        "-NoExit",
+        "-Command",
+        ". \"./.venv.ps1\""  // 注意引号处理路径中的空格
+    ]
+}

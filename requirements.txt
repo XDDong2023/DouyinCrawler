@@ -1,0 +1,6 @@
+DrissionPage==4.1.0.18
+PySide6==6.9.1
+PySide6==6.9.1
+PySide6_Addons==6.9.1
+PySide6_Essentials==6.9.1
+Requests==2.32.4
