@@ -71,16 +71,15 @@ class DouyinSpider:
                 'text:保存登录信息'
             ]
         
-            for login in login_elements:
-                login_ele = self.page.ele(login)
-                if login_ele:
-                    print('检测为已登录')
-                    self.is_logged_in = True
-                    return True
-                else:
-                    print("检测为未登录")
-                    self.is_logged_in = False
-                    return False           
+            for selector in login_elements:
+                try:
+                    if self.page.ele(selector, timeout=2):
+                        print('检测为已登录')
+                        return True
+                except:
+                    continue
+            print("检测为未登录")
+            return False
         except Exception as e:
             print(f"检查登录状态失败: {e}")
             return False
@@ -89,7 +88,9 @@ class DouyinSpider:
         """关闭浏览器"""
         if self.page:
             try:
-                self.page.quit()
+                # ✅ 确保页面存在再尝试关闭
+                if hasattr(self.page, 'quit'):
+                    self.page.quit()
                 self.page = None
                 self.is_headless = False
             except Exception as e:
@@ -102,8 +103,6 @@ class DouyinSpider:
             self.page.listen.start('aweme/v1/web/aweme/detail/')
             # 访问网页,get()已内置等待加载开始，后无须跟wait.load_start()。
             self.page.get(url)
-            # 查找登录弹窗是否存在，如果存在则隐藏，避免影响页面解析(登录弹窗存在时，无法操作滚动)，实际解析发现不隐藏也不影响，故注释
-            # self._hide_login_popup()
 
             packets = self.page.listen.steps(timeout=10)
             MAX_TITLE_LENGTH = 200
@@ -147,9 +146,9 @@ class DouyinSpider:
         except Exception as e:
             print(f"❌ 获取视频失败: {str(e)}")
             return []
-        # finally:
-            # self.close_browser()
-            # print('已关闭页面')
+        finally:
+            self.close_browser()
+            print('已关闭页面')
         
         
     def resolve_url(self, url):
@@ -301,24 +300,7 @@ class DouyinSpider:
         print(f"✅ 成功提取 {len(video_items)} 个视频")
         return video_items
 
-    def _hide_login_popup(self):
-        """隐藏登录弹窗"""
-        # 尝试两种常见的登录弹窗选择器
-        selectors = [
-            '[class*="ezAK2PYX vNSfRbBQ"]',
-            'xpath://div[starts-with(@id, "login-full-panel-")]'
-        ]
-        
-        for selector in selectors:
-            login_ele = self.page.ele(selector)
-            if login_ele:
-                print('发现登录弹窗')
-                login_ele.set.style(display='none')
-                print('已隐藏登录弹窗')
-                return True
-        
-        print('未发现登录弹窗')
-        return False
+
 
 
     def _scroll_to_bottom(self):
