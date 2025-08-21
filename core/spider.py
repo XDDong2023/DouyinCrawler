@@ -1,7 +1,6 @@
-from DrissionPage import ChromiumPage,ChromiumOptions
+from DrissionPage import ChromiumPage,ChromiumOptions,SessionPage
 import re
 import traceback
-
 from .models import VideoItem
 import time 
 
@@ -18,11 +17,15 @@ class DouyinSpider:
     def __init__(self):
         self.page = None  # 浏览器页面实例
         self.browser = None  # 浏览器实例（如果需要单独访问）
-
-        # self.is_logged_in = False
         self.is_headless = False
         self.video_items = []
+        self.cancel_flag = False  # 添加取消标志
 
+    def check_cancel(self):
+        """检查是否需要取消操作"""
+        if self.cancel_flag:
+            self.close_browser()
+            raise InterruptedError("操作已取消")
 
     def create_browser(self, headless=False):           
         """创建浏览器实例，可复用已有实例，默认非无头模式"""
@@ -50,6 +53,7 @@ class DouyinSpider:
             
         }
         # 创建ChromiumPage对象
+        self.check_cancel()
         self.page = ChromiumPage(co)
         self.page.set.headers(headers)
         self.is_headless = headless  # 记录当前模式
@@ -100,17 +104,17 @@ class DouyinSpider:
         try:
             # 创建无头模式浏览器,调试时可以改成非无头模式查看效果
             self.create_browser(headless=False)
-            self.page.listen.start('aweme/v1/web/aweme/detail/')
-            # 访问网页,get()已内置等待加载开始，后无须跟wait.load_start()。
+            self.page.listen.start('aweme/v1/web/aweme/detail/')            
             self.page.get(url)
-
             packets = self.page.listen.steps(timeout=10)
             MAX_TITLE_LENGTH = 200
             for idx, packet in enumerate(packets, 1):
                 try:             
+                    self.check_cancel()  # 添加取消检查
                     json_data = packet.response.body
                     # 注意：单个视频接口返回的是aweme_detail对象（非列表）,减少不必要的迭代（单个视频只需处理第一个有效数据包）
                     if 'aweme_detail' in json_data:
+                        # video_info为字典
                         video_info = json_data['aweme_detail']
                         old_video_title = video_info.get('desc', '')
                         
@@ -118,8 +122,7 @@ class DouyinSpider:
                         video_title = re.sub(r'[\\/:*?"<>|!\n#]', '_', old_video_title)
                         # 截取标题长度，确保不超过Windows文件名限制
                         if len(video_title) > MAX_TITLE_LENGTH:
-                            print(f"📏 标题过长({len(video_title)}字符)，已截断至{MAX_TITLE_LENGTH}字符")
-                        
+                            video_title = video_title[:MAX_TITLE_LENGTH]
                         # 获取最高清视频地址
                         url_list = video_info['video']['play_addr']['url_list']
                         # 生成器表达式：(url for url in url_list if 'v3-web.douyinvod.com' in url) 是一个生成器表达式，它会遍历url_list中的每个URL，
@@ -130,9 +133,6 @@ class DouyinSpider:
                         # 如果没有找到v3-web.douyinvod.com的URL，打印错误信息
                         if not video_url:
                             print(f"⚠️ 未找到v3有效URL: {url_list}")
-                        
-                        # print(f"获取视频标题: {video_title}")
-                        # print(f"获取视频URL: {video_url}")
 
                         # 直接返回结果，不再继续处理后续包
                         return [VideoItem(url=video_url, title=video_title)]
@@ -142,7 +142,6 @@ class DouyinSpider:
                     continue
             print("⚠️ 未找到有效视频数据包")
             return []
-
         except Exception as e:
             print(f"❌ 获取视频失败: {str(e)}")
             return []
@@ -152,7 +151,6 @@ class DouyinSpider:
         
         
     def resolve_url(self, url):
-        # 待优化：处理抖音分享链接,将非URL部分截取掉
         try:
             print(f"正在解析链接: {url}")            
             # 验证URL格式
@@ -162,7 +160,6 @@ class DouyinSpider:
                 
             # 创建浏览器实例（如果还没有）
             if not hasattr(self, 'page') or not self.page:
-                print("创建浏览器实例")
                 self.create_browser(headless=True)
        
             self.page.get(url)
@@ -173,9 +170,7 @@ class DouyinSpider:
         
         except Exception as e:
             print(f"解析URL时出错: {str(e)}")
-            return None
-            
-
+            return None           
         
     def get_user_videos(self, url):
         try:
@@ -183,6 +178,7 @@ class DouyinSpider:
             self.create_browser(headless=False)        
             self.page.listen.start('aweme/v1/web/aweme/post/')
             self.page.get(url)
+            self.check_cancel()  # 添加取消检查
             self._scroll_to_bottom()
             packets = self.page.listen.steps(timeout=10) #这里packets是生成器对象，listen.steps方法默认timeout=None，为None表示无限等待，此时的生成器是一个动态生成器，会持续阻塞等待新数据包，因此在后续的遍历中，会一直阻塞，导致后续逻辑无法执行，在这里需要手动设置timeout时间，来终止阻塞等待，timeout时间设置太短会导致数据包未获取完全，timeout时间设置太长会导致程序等待时间过长，因此需要根据实际情况来设置timeout时间
         
@@ -190,7 +186,7 @@ class DouyinSpider:
             video_items = self._process_video_packets(packets)
             return video_items
         except Exception as e:
-            print(f"获取收藏视频失败: {e}")
+            # print(f"获取个人视频失败: {e}")
             return []
         finally:
             self.close_browser()
@@ -202,14 +198,13 @@ class DouyinSpider:
             self.page.listen.start('aweme/v1/web/aweme/listcollection/')
             # 访问收藏页面
             self.page.get("https://www.douyin.com/user/self?showTab=favorite_collection")             
-            
+            self.check_cancel()  # 添加取消检查
             # 滚动到页面底部加载所有收藏视频
             self._scroll_to_bottom()
             packets = self.page.listen.steps(timeout=10) #这里packets是生成器对象，listen.steps方法默认timeout=None，为None表示无限等待，此时的生成器是一个动态生成器，会持续阻塞等待新数据包，因此在后续的遍历中，会一直阻塞，导致后续逻辑无法执行，在这里需要手动设置timeout时间，来终止阻塞等待，timeout时间设置太短会导致数据包未获取完全，timeout时间设置太长会导致程序等待时间过长，因此需要根据实际情况来设置timeout时间
             
             # 遍历处理每个数据包
             video_items = self._process_video_packets(packets)
-
             return video_items
         except Exception as e:
             print(f"获取收藏视频失败: {e}")
@@ -226,16 +221,14 @@ class DouyinSpider:
             self.page.listen.start('aweme/v1/web/aweme/favorite/')
             # 访问喜欢页面
             self.page.get("https://www.douyin.com/user/self?showTab=like")
-        
+            self.check_cancel()  # 添加取消检查
             # 滚动到页面底部加载所有收藏视频
             self._scroll_to_bottom()
             packets = self.page.listen.steps(timeout=10) #这里packets是生成器对象，listen.steps方法默认timeout=None，为None表示无限等待，此时的生成器是一个动态生成器，会持续阻塞等待新数据包，因此在后续的遍历中，会一直阻塞，导致后续逻辑无法执行，在这里需要手动设置timeout时间，来终止阻塞等待，timeout时间设置太短会导致数据包未获取完全，timeout时间设置太长会导致程序等待时间过长，因此需要根据实际情况来设置timeout时间
         
             # 遍历处理每个数据包
             video_items = self._process_video_packets(packets)
-            # self.page.close() # 关闭浏览器
             return video_items
-
         except Exception as e:
             print(f"获取喜欢视频失败: {e}")
             return []
@@ -247,6 +240,7 @@ class DouyinSpider:
         video_items = []
         MAX_TITLE_LENGTH = 200  # Windows文件名最大长度限制，文件名过长会导致后续下载失败
         for idx, packet in enumerate(packets, 1):
+            self.check_cancel()
             try:
                 if not packet.response or not packet.response.body:
                     print(f"⚠️ 第 {idx} 个数据包无响应体")
@@ -258,7 +252,7 @@ class DouyinSpider:
                     print(f"⚠️ 第 {idx} 个数据包无有效数据")
                     continue
                 print(f"📦 处理第 {idx} 个数据包，包含 {len(aweme_list)} 个视频")    
-                
+                self.check_cancel()
                 # 提取视频标题和链接并清洗
                 for video_info in aweme_list:
                     old_video_title = video_info.get('desc', '')
@@ -268,8 +262,6 @@ class DouyinSpider:
                     if len(video_title) > MAX_TITLE_LENGTH:
                         print(f"📏 标题过长({len(video_title)}字符)，已截断至{MAX_TITLE_LENGTH}字符")
                         video_title = video_title[:MAX_TITLE_LENGTH]
-                    # 这里需要优化：提取URL包含v3的URL，如果URL为空或不包含v3的URL，则跳过该项，在下载的时候添加跳过为空的行的逻辑
-                    # video_url = video_info['video']['play_addr']['url_list'][0]
                     # 改进URL获取逻辑
                     url_list = video_info['video']['play_addr']['url_list']
                     video_url = None
@@ -300,9 +292,6 @@ class DouyinSpider:
         print(f"✅ 成功提取 {len(video_items)} 个视频")
         return video_items
 
-
-
-
     def _scroll_to_bottom(self):
         """滚动加载所有视频列表内容"""
         # 记录滚动次数防止无限滚动
@@ -310,6 +299,7 @@ class DouyinSpider:
         max_scrolls = 50  # 最大滚动次数防止无限循环
         
         while scroll_count < max_scrolls:
+            self.check_cancel()
             # 1. 检查是否已加载完成（存在结束元素）
             end_element = self.page.ele('text:没有更多了', timeout=1)
             if end_element:
@@ -323,32 +313,21 @@ class DouyinSpider:
                 # 滚动到元素位置（实现类似翻页效果）
                     self.page.scroll.to_see(tab_element)
                     print(f"🔄 滚动到页尾元素 ({scroll_count + 1}/{max_scrolls})")
-                
+                self.check_cancel()
                 # 等待新内容加载
-                time.sleep(1.5)  # 固定等待时间确保加载完成
+                time.sleep(1)  # 固定等待时间确保加载完成
             except:
-            # 如果找不到页尾元素，尝试滚动到底部
-                print("⚠️ 未找到页尾元素，尝试滚动到底部")
-                self.page.scroll.to_bottom()
-                time.sleep(1)
-            
+            # 如果找不到页尾元素
+                print("⚠️ 未找到页尾元素")           
             
             # 3. 增加滚动计数
             scroll_count += 1
             print(f"🔁 已滚动 {scroll_count} 次")
-            
-            # 4. 随机等待防止被检测（0.5-2秒）
-            # 模拟真人等待（随机时间 + 微小移动）
-            # wait_time = random.uniform(1.5, 3)
-            # page.scroll.down(random.randint(50, 200))  # 添加随机抖动
-            # print(f"⏳ 等待 {wait_time:.1f} 秒后继续滚动")
-            # time.sleep(wait_time)
         
         # 检查退出原因
         if scroll_count >= max_scrolls:
             print(f"⚠️ 达到最大滚动次数 {max_scrolls}，停止滚动")
         else:
-            print(f"✅ 成功加载所有内容，共滚动 {scroll_count} 次")
-        
+            print(f"✅ 成功加载所有内容，共滚动 {scroll_count} 次")       
         return scroll_count
     

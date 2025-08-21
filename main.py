@@ -17,7 +17,6 @@ import time
 import re
 
 
-
 class MainWindow(QObject):
     """主窗口控制器"""
     # 自定义信号，用于从后台线程安全更新UI，所有通过后台线程操作UI的地方都需要使用这些信号，避免程序卡死
@@ -34,8 +33,20 @@ class MainWindow(QObject):
         self.loader = QUiLoader()
         ui_path = Path(__file__).parent / "ui" / "main_window.ui"
         self.window = self.loader.load(str(ui_path))
+        # 判断是否是打包环境
+        if getattr(sys, 'frozen', False):
+            # 打包后，UI文件在临时目录的ui文件夹下
+            base_path = Path(sys._MEIPASS)
+        else:
+            # 开发环境，使用原路径
+            base_path = Path(__file__).parent
+            
+        ui_path = base_path / "ui" / "main_window.ui"
+        self.window = self.loader.load(str(ui_path))
+
         # 初始化爬虫实例(创建类实例)
         self.spider = DouyinSpider()
+        self.video_items = []  # 存储视频项的列表
 
         # 添加下载管理相关属性
         self.downloader = None
@@ -102,9 +113,9 @@ class MainWindow(QObject):
         # 设置表头自适应
         # horizontalHeader()：这个方法返回表格的水平表头（QHeaderView 对象），控制表格的列。
         # setSectionResizeMode(column, mode)：这个方法设置指定列的调整模式。
-        # QHeaderView.Stretch：这个模式表示列会自动调整宽度以填充整个表格宽度。
-        self.table_widget.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)  # 标题列自适应
-        self.table_widget.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)  # URL列自适应
+        # QHeaderView.ResizeMode.Stretch：这个模式表示列会自动调整宽度以填充整个表格宽度。
+        self.table_widget.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)  # 标题列自适应
+        self.table_widget.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)  # URL列自适应
 
 
 
@@ -121,6 +132,7 @@ class MainWindow(QObject):
         # 设置操作类型
         self.operation_type = "resolve"
         self.operation_cancelled = False
+        self.spider.cancel_flag = False
         # 创建操作弹窗
         self.create_operation_dialog_signal.emit(
             "解析URL",
@@ -166,11 +178,8 @@ class MainWindow(QObject):
                     return                         
                 
                 video_items = self.spider.get_user_videos(final_url)
-                if self.operation_cancelled:
-                    self.close_operation_dialog_signal.emit()
-                    self.show_info_signal.emit("操作取消", "获取视频操作已取消")
                 # 检查返回值是否为字符串(错误信息)
-                elif isinstance(video_items, str):
+                if isinstance(video_items, str):
                     # 如果是错误信息，通过self.show_error_signal.emit()发送一个错误信号，显示提示信息。
                     self.close_operation_dialog_signal.emit()
                     self.show_error_signal.emit("提示", video_items)
@@ -195,9 +204,6 @@ class MainWindow(QObject):
             self.show_error_signal.emit("错误", error_msg)
             self.update_table_signal.emit([])  # 清空表格
             
-        # finally:
-        #     # 使用信号更新按钮状态，恢复按钮状态（在主线程执行）
-        #     self.set_ui_enabled(True)
 
     def extract_douyin_url(self, text):
         # 优先匹配抖音短链接格式
@@ -221,6 +227,7 @@ class MainWindow(QObject):
         # 设置操作类型
         self.operation_type = "favorites"
         self.operation_cancelled = False
+        self.spider.cancel_flag = False
         
         # 创建操作弹窗
         self.create_operation_dialog_signal.emit(
@@ -239,17 +246,16 @@ class MainWindow(QObject):
     def _get_favorites_thread(self):
         """在后台线程中获取收藏视频"""
         try:
-            # 阶段1: 检查登录状态           
-            # 创建不可见浏览器
-            self.spider.create_browser(headless=False)
+            # 阶段1: 检查登录状态
+            # 检查操作是否被取消
+            if self.operation_cancelled:
+                return           
+            # 创建不可见浏览器headless=True,调试时可以设置headless=False
+            self.spider.create_browser(headless=True)
             
             # 检查登录状态
             is_logged_in = self.spider.check_login_status()
-            
-            # 检查操作是否被取消
-            if self.operation_cancelled:
-                return
-            
+              
             if not is_logged_in:
                 # ✅ 使用信号关闭操作弹窗
                 self.close_operation_dialog_signal.emit()
@@ -265,10 +271,7 @@ class MainWindow(QObject):
             video_items = self.spider.get_favorites_videos()
             
             # 检查操作是否被取消
-            if self.operation_cancelled:
-                self.show_info_signal.emit("操作取消", "获取我的收藏视频操作已取消")
-            # 检查返回值是否为字符串(错误信息)
-            elif isinstance(video_items, str):
+            if isinstance(video_items, str):
                 # 如果是错误信息，通过self.show_error_signal.emit()发送一个错误信号，显示提示信息。
                 self.show_error_signal.emit("提示", video_items)
             else:
@@ -281,8 +284,7 @@ class MainWindow(QObject):
                 error_msg = f"获取收藏视频失败: {str(e)}"
                 self.show_error_signal.emit("错误", error_msg)
         finally:
-            if self.spider.page.states.is_alive:
-                self.spider.close_browser()
+            self.spider.close_browser()
             self.close_operation_dialog_signal.emit()
 
     def get_likes(self):
@@ -290,6 +292,7 @@ class MainWindow(QObject):
         # 设置操作类型
         self.operation_type = "likes"
         self.operation_cancelled = False
+        self.spider.cancel_flag = False
         
         # 创建操作弹窗
         self.create_operation_dialog_signal.emit(
@@ -308,18 +311,16 @@ class MainWindow(QObject):
     def _get_likes_thread(self):
         """在后台线程中获取喜欢视频"""
         try:
-
             # 阶段1: 检查登录状态
+            # 检查操作是否被取消
+            if self.operation_cancelled:
+                return
             # 创建不可见浏览器
             self.spider.create_browser(headless=True)
             
             # 检查登录状态
             is_logged_in = self.spider.check_login_status()
-            
-            # 检查操作是否被取消
-            if self.operation_cancelled:
-                return
-            
+        
             if not is_logged_in:
                 # 未登录状态处理
                 self.close_operation_dialog_signal.emit()
@@ -334,10 +335,7 @@ class MainWindow(QObject):
             video_items = self.spider.get_likes_videos()
             
             # 检查操作是否被取消
-            if self.operation_cancelled:
-                self.show_info_signal.emit("操作取消", "获取我的喜欢视频操作已取消")
-            # 检查返回值是否为字符串(错误信息)
-            elif isinstance(video_items, str):
+            if isinstance(video_items, str):
                 # 如果是错误信息，通过self.show_error_signal.emit()发送一个错误信号，显示提示信息。
                 self.show_error_signal.emit("提示", video_items)
             else:
@@ -350,8 +348,7 @@ class MainWindow(QObject):
                 error_msg = f"获取收藏视频失败: {str(e)}"
                 self.show_error_signal.emit("错误", error_msg)
         finally:
-            if self.spider.page.states.is_alive:
-                self.spider.close_browser()
+            self.spider.close_browser()
             self.close_operation_dialog_signal.emit()
 
     def perform_login(self):
@@ -360,6 +357,7 @@ class MainWindow(QObject):
         # 设置操作类型
         self.operation_type = "login"
         self.operation_cancelled = False
+        self.spider.cancel_flag = False
         
         # 创建操作弹窗
         self.create_operation_dialog_signal.emit(
@@ -392,12 +390,14 @@ class MainWindow(QObject):
     def _login_monitoring_thread(self):
         """登录监控线程"""
         try:
+            if self.operation_cancelled:
+                return
             # 创建可见浏览器
-            self.spider.create_browser()            
+            self.spider.create_browser(False)            
             
             # 计时器
             start_time = time.time()
-            check_interval = 5  # 检查间隔(秒)
+            check_interval = 3  # 检查间隔(秒)
             timeout = 60  # 超时时间(秒)
             
             # 检测循环
@@ -466,13 +466,10 @@ class MainWindow(QObject):
         buttons = QMessageBox.StandardButton.NoButton
         if cancellable and confirmable:
             buttons = QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Ok
-            print(f"添加确认和取消按钮")
         elif cancellable:
             buttons = QMessageBox.StandardButton.Cancel
-            print(f"添加取消按钮")
         elif confirmable:
             buttons = QMessageBox.StandardButton.Ok
-            print(f"添加确认按钮")
             
         self.operation_dialog.setStandardButtons(buttons)
         
@@ -505,8 +502,8 @@ class MainWindow(QObject):
 
     def _cancel_operation(self):
         """处理操作取消"""
-        
         # 设置取消标志
+        self.spider.cancel_flag = True
         self.operation_cancelled = True
         
         # 根据操作类型执行不同的取消处理
@@ -623,8 +620,6 @@ class MainWindow(QObject):
         """显示窗口"""
         self.window.show()
 
-
-
     def download_videos(self):
         """启动下载过程"""
         save_path = self.save_directory.text()
@@ -634,7 +629,7 @@ class MainWindow(QObject):
             QMessageBox.warning(self.window, "路径错误", "请选择有效的保存路径")
             return
         
-        if not self.video_items:# 逻辑错误，待更新
+        if not self.video_items:
             QMessageBox.warning(self.window, "错误", "没有可下载的视频")
             return
         
@@ -679,7 +674,7 @@ class MainWindow(QObject):
         # 进度标签
         self.download_progress_label = QLabel("正在准备下载...", self.download_dialog)
         # 使用setAlignment(Qt.AlignCenter)使文本居中显示
-        self.download_progress_label.setAlignment(Qt.AlignCenter)
+        self.download_progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
   
         # 进度条,创建了一个QProgressBar进度条对象
         self.progress_bar = QProgressBar(self.download_dialog)
